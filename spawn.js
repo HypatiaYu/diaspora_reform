@@ -349,12 +349,16 @@ class EnemyUnit extends EntityTemplate {
     static BODY_GEOMETRY = new THREE.DodecahedronGeometry(0.6);
     static BODY_COLOR = 0xff2222;
     static BODY_EMISSIVE = 0x990000;
+    static HEALTH = 8;
+    static MAX_HEALTH = 8;
 
     constructor(scene, position) {
         super(scene);
         this.target = null;
         this.lastAttackTime = 0;
         this.state = 'hunting';
+        this.health = this.constructor.HEALTH;
+        this.maxHealth = this.constructor.MAX_HEALTH;
         
         const group = new THREE.Group();
         
@@ -464,6 +468,12 @@ class EnemyUnit extends EntityTemplate {
     }
 
     takeDamage(amount) {
+        this.health = Math.max(0, this.health - amount);
+        
+        if (this.health <= 0) {
+            this.remove();
+            return true;
+        }
         return false;
     }
 
@@ -474,25 +484,37 @@ class EnemyUnit extends EntityTemplate {
     }
 }
 
-class WarriorEntity extends EntityTemplate {
+class WarriorUnit extends EntityTemplate {
     static instances = [];
+    static MOVE_SPEED = 0.07;
+    static ATTACK_DAMAGE = 4;
+    static ATTACK_COOLDOWN = 800;
+    static BODY_GEOMETRY = new THREE.BoxGeometry(0.7, 1.0, 0.7);
+    static BODY_COLOR = 0xff0000;
+    static BODY_EMISSIVE = 0x880000;
+    static HEALTH = 10;
+    static MAX_HEALTH = 10;
 
     constructor(scene, position, homeBase) {
         super(scene);
         this.homeBase = homeBase;
+        this.target = null;
+        this.state = 'idle';
+        this.lastAttackTime = 0;
+        this.health = this.constructor.HEALTH;
+        this.maxHealth = this.constructor.MAX_HEALTH;
         
         const group = new THREE.Group();
         
-        const bodyGeom = new THREE.BoxGeometry(0.7, 1.0, 0.7);
         const bodyMat = new THREE.MeshStandardMaterial({ 
-            color: 0xff0000,
-            emissive: 0x880000,
+            color: this.constructor.BODY_COLOR,
+            emissive: this.constructor.BODY_EMISSIVE,
             emissiveIntensity: 0.5,
             metalness: 0.6,
             roughness: 0.3
         });
         
-        const body = new THREE.Mesh(bodyGeom, bodyMat);
+        const body = new THREE.Mesh(this.constructor.BODY_GEOMETRY, bodyMat);
         body.position.y = 0.5;
         group.add(body);
         
@@ -532,8 +554,10 @@ class WarriorEntity extends EntityTemplate {
         group.add(hitSphere);
         
         this.mesh = group;
+        this.body = body;
+        
         this.scene.add(this.mesh);
-        WarriorEntity.instances.push(this);
+        WarriorUnit.instances.push(this);
         
         this.animate();
     }
@@ -547,11 +571,103 @@ class WarriorEntity extends EntityTemplate {
         };
         anim();
     }
+
+    setSelected(selected) {
+        if (!this.mesh) return;
+        this.body.material.emissive.setHex(selected ? 0x00ff00 : this.constructor.BODY_EMISSIVE);
+        this.body.material.emissiveIntensity = selected ? 0.8 : 0.5;
+    }
+
+    findNearestEnemy() {
+        if (EnemyUnit.instances.length === 0) return null;
+        
+        let nearest = null;
+        let minDist = Infinity;
+        
+        EnemyUnit.instances.forEach(enemy => {
+            const dist = this.mesh.position.distanceTo(enemy.mesh.position);
+            if (dist < minDist) {
+                minDist = dist;
+                nearest = enemy;
+            }
+        });
+        
+        return nearest;
+    }
+
+    update() {
+        if (EnemyUnit.instances.length === 0) {
+            this.state = 'idle';
+            return;
+        }
+
+        this.target = this.findNearestEnemy();
+        
+        if (!this.target) return;
+        
+        const targetPos = this.target.mesh.position;
+        const dir = new THREE.Vector3().subVectors(targetPos, this.mesh.position);
+        const dist = dir.length();
+        
+        if (dist < 1.2) {
+            const now = Date.now();
+            if (now - this.lastAttackTime >= this.constructor.ATTACK_COOLDOWN) {
+                this.lastAttackTime = now;
+                
+                this.target.takeDamage(this.constructor.ATTACK_DAMAGE);
+                
+                this.body.scale.set(1.3, 1.3, 1.3);
+                setTimeout(() => {
+                    if (this.body) this.body.scale.set(1, 1, 1);
+                }, 100);
+                
+                if (typeof updateInfo === 'function') updateInfo();
+            }
+        } else {
+            dir.normalize().multiplyScalar(this.constructor.MOVE_SPEED);
+            this.mesh.position.add(dir);
+        }
+    }
+
+    takeDamage(amount) {
+        this.health = Math.max(0, this.health - amount);
+        
+        if (this.health <= 0) {
+            this.remove();
+            return true;
+        }
+        return false;
+    }
+
+    remove() {
+        this.scene.remove(this.mesh);
+        const idx = WarriorUnit.instances.indexOf(this);
+        if (idx > -1) WarriorUnit.instances.splice(idx, 1);
+    }
+}
+
+class WarriorEntity extends WarriorUnit {
+    static instances = [];
+
+    constructor(scene, position, homeBase) {
+        super(scene, position, homeBase);
+        WarriorEntity.instances.push(this);
+    }
+
+    remove() {
+        super.remove();
+        const idx = WarriorEntity.instances.indexOf(this);
+        if (idx > -1) WarriorEntity.instances.splice(idx, 1);
+    }
 }
 
 function updateDrones() {
     DroneEntity.instances.forEach(drone => drone.update());
     ResourceNode.instances.forEach(res => res.updateDots());
+}
+
+function updateWarriors() {
+    WarriorEntity.instances.forEach(warrior => warrior.update());
 }
 
 function updateEnemies() {
@@ -589,10 +705,11 @@ function spawnDrone(scene, position, homeBase) {
 }
 
 function spawnWarrior(scene, position, homeBase) {
-    return new WarriorEntity(scene, position, homeBase);
+    return spawnWarriorType(scene, position, homeBase);
 }
 
 let EnemyType = EnemyUnit;
+let WarriorType = WarriorEntity;
 
 function spawnEnemy(scene, position, enemyType = null) {
     const Type = enemyType || EnemyType;
@@ -601,6 +718,15 @@ function spawnEnemy(scene, position, enemyType = null) {
 
 function setEnemyType(type) {
     EnemyType = type;
+}
+
+function spawnWarriorType(scene, position, homeBase, warriorType = null) {
+    const Type = warriorType || WarriorType;
+    return new Type(scene, position, homeBase);
+}
+
+function setWarriorType(type) {
+    WarriorType = type;
 }
 
 function spawnAll(scene, position) {
